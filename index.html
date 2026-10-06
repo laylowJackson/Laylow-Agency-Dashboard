@@ -300,6 +300,34 @@
       color: #dfe7ff;
     }
 
+    .ai-box {
+      background: #0b1223;
+      border: 1px solid #374b80;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #dfe7ff;
+    }
+
+    .ai-box textarea {
+      min-height: 90px;
+      resize: vertical;
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+
+    .ai-output {
+      margin-top: 10px;
+      background: #101827;
+      border: 1px solid #2a3d67;
+      border-radius: 8px;
+      padding: 10px;
+      color: #dce6ff;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
     @media (min-width: 700px) {
       .stats { grid-template-columns: repeat(4, 1fr); }
       .news-grid { grid-template-columns: 1.15fr 1fr; }
@@ -419,6 +447,20 @@
       </table>
     </div>
 
+    <div class="ai-box">
+      <strong>AI Assistant</strong>
+
+      <label for="apiKeyInput">OpenAI API Key</label>
+      <input id="apiKeyInput" type="password" placeholder="sk-..." />
+      <button class="secondary" onclick="saveAPIKey()">Save API Key</button>
+
+      <button class="secondary" onclick="runMarketAIAnalysis()">Ask AI: Market Analysis</button>
+      <button class="secondary" onclick="runTradeAIValidation()">Ask AI: Pre-Trade Check</button>
+      <button class="secondary" onclick="runJournalAIReview()">Ask AI: Trade Review</button>
+
+      <div id="aiOutput" class="ai-output">No AI output yet.</div>
+    </div>
+
     <div class="info-box" id="tradeInfo">
       Ready to trade. Risk is reduced when sentiment or strategy alignment is weak.
     </div>
@@ -430,6 +472,7 @@
 
 <script>
 const STORAGE_KEY = "laylow-agency-intelligence-v3";
+const OPENAI_API_KEY_KEY = "openai_api_key";
 
 const strategies = {
   "QQQ Momentum": {
@@ -515,6 +558,111 @@ function loadState() {
     console.warn("Failed to load state", e);
     return JSON.parse(JSON.stringify(defaultState));
   }
+}
+
+function getAPIKey() {
+  return localStorage.getItem(OPENAI_API_KEY_KEY) || "";
+}
+
+function saveAPIKey() {
+  const value = document.getElementById("apiKeyInput").value.trim();
+  if (!value) {
+    alert("Please enter your OpenAI API key first.");
+    return;
+  }
+  localStorage.setItem(OPENAI_API_KEY_KEY, value);
+  document.getElementById("aiOutput").innerText = "API key saved locally in this browser.";
+  addLog("AI API key saved.");
+}
+
+async function askChatGPT(prompt) {
+  const apiKey = getAPIKey();
+  if (!apiKey) {
+    return "No OpenAI API key found. Add one in the AI Assistant panel first.";
+  }
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.4
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      const message = data.error ? data.error.message : "Unknown API error.";
+      return `OpenAI Error: ${message}`;
+    }
+
+    return data.choices?.[0]?.message?.content || "No response from OpenAI.";
+  } catch (error) {
+    return `Request failed: ${error.message}`;
+  }
+}
+
+function setAIOutput(text) {
+  document.getElementById("aiOutput").innerText = text;
+}
+
+async function runMarketAIAnalysis() {
+  const symbol = document.getElementById("symbol").value;
+  const sentiment = getMarketSentiment(symbol);
+
+  const prompt = `
+    Analyze the trading setup for ${symbol}.
+    Current market sentiment: ${sentiment.label} (${sentiment.score.toFixed(2)}).
+    Headline summary: ${sentiment.headline}
+    Give a concise 2-3 sentence answer about whether traders should be bullish, bearish, or neutral.
+  `;
+
+  setAIOutput("Running AI market analysis...");
+  const result = await askChatGPT(prompt);
+  setAIOutput(result);
+}
+
+async function runTradeAIValidation() {
+  const symbol = document.getElementById("symbol").value;
+  const direction = document.getElementById("direction").value;
+  const sentiment = getMarketSentiment(symbol);
+  const approval = getTradeApproval(symbol, direction);
+
+  const prompt = `
+    I am considering a ${direction} trade in ${symbol}.
+    Market sentiment: ${sentiment.label} (${sentiment.score.toFixed(2)}).
+    Current summary: ${sentiment.headline}
+    Risk on this trade is ${document.getElementById("riskPercent").value}%.
+    Daily loss limit: ${document.getElementById("lossLimitPercent").value}%.
+    My internal approval status is ${approval.status}.
+    Should I take this trade? Answer YES, NO, or REDUCE RISK and explain briefly.
+  `;
+
+  setAIOutput("Running AI trade validation...");
+  const result = await askChatGPT(prompt);
+  setAIOutput(result);
+}
+
+async function runJournalAIReview() {
+  const trades = state.history && state.history.length
+    ? state.history.map(t => `${t.symbol} ${t.direction}: ${money(t.result)}; confidence ${t.confidence}%`).join("\n")
+    : "No trades yet.";
+
+  const prompt = `
+    Please review this trading history and give 2-4 practical suggestions to improve execution discipline and edge.
+    Trade history:
+    ${trades}
+  `;
+
+  setAIOutput("Reviewing trade journal...");
+  const result = await askChatGPT(prompt);
+  setAIOutput(result);
 }
 
 function getMarketSentiment(symbol) {
@@ -859,6 +1007,12 @@ document.getElementById("symbol").addEventListener("change", () => {
 });
 
 document.getElementById("direction").addEventListener("change", updateApproval);
+
+const savedKey = getAPIKey();
+if (savedKey) {
+  document.getElementById("apiKeyInput").value = savedKey;
+}
+
 updateDashboard();
 </script>
 </body>
