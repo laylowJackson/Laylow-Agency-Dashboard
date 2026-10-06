@@ -220,6 +220,26 @@
       line-height: 1.5;
     }
 
+    .approval {
+      border: 1px solid #2e4d88;
+      background: #0b1223;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 12px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .approval .status {
+      font-weight: bold;
+      display: inline-block;
+      margin-bottom: 6px;
+    }
+
+    .approval.green .status { color: var(--success); }
+    .approval.yellow .status { color: var(--warning); }
+    .approval.red .status { color: var(--danger); }
+
     @media (min-width: 700px) {
       .stats { grid-template-columns: repeat(4, 1fr); }
       .news-grid { grid-template-columns: 1.15fr 1fr; }
@@ -230,7 +250,7 @@
 
 <div class="container">
   <h1>Trading Command Center</h1>
-  <div class="subtitle">Professional paper-trading dashboard with news-aware execution</div>
+  <div class="subtitle">Risk-first paper-trading dashboard with pre-trade intelligence</div>
 
   <div class="stats">
     <div class="card">
@@ -293,7 +313,7 @@
     </select>
 
     <label>Risk Per Trade (%)</label>
-    <input id="riskPercent" type="number" value="2" min="0.5" max="5" step="0.5" />
+    <input id="riskPercent" type="number" value="1" min="0.5" max="5" step="0.5" />
 
     <label>Daily Loss Limit (%)</label>
     <input id="lossLimitPercent" type="number" value="5" min="1" max="20" step="1" />
@@ -302,8 +322,13 @@
     <button class="secondary" onclick="resetAccount()">Reset Account</button>
     <button class="danger" onclick="toggleKill()">Kill Switch</button>
 
+    <div class="approval" id="approvalPanel">
+      <div class="status">Approval: Pending</div><br>
+      Trade approval will be shown here before execution.
+    </div>
+
     <div class="info-box" id="tradeInfo">
-      Ready to trade. Trading edge improves when sentiment aligns with the chosen strategy and direction.
+      Ready to trade. Risk is reduced when sentiment or strategy alignment is weak.
     </div>
   </div>
 
@@ -312,7 +337,7 @@
 </div>
 
 <script>
-const STORAGE_KEY = "laylow-agency-news-v1";
+const STORAGE_KEY = "laylow-agency-intelligence-v1";
 
 const strategies = {
   "QQQ Momentum": {
@@ -397,8 +422,8 @@ function loadState() {
 
 function getMarketSentiment(symbol) {
   const matches = newsPool.filter(item => item.symbol === symbol || item.symbol === "SPY");
-  const base = matches.length ? matches.reduce((sum, item) => sum + item.sentiment, 0) / matches.length : 0;
-  const adjusted = Math.max(-1, Math.min(1, base + (symbol === "QQQ" ? 0.08 : 0)));
+  const average = matches.length ? matches.reduce((sum, item) => sum + item.sentiment, 0) / matches.length : 0;
+  const adjusted = Math.max(-1, Math.min(1, average));
   return {
     score: adjusted,
     label: adjusted > 0.3 ? "Bullish" : adjusted < -0.3 ? "Bearish" : "Neutral",
@@ -426,6 +451,8 @@ function renderNewsFeed() {
 
   document.getElementById("tradeInfo").innerText =
     `${symbol} market pulse: ${sentiment.label}. ${sentiment.headline}`;
+
+  updateApproval();
 }
 
 function renderWorkers() {
@@ -502,44 +529,99 @@ function resetAccount() {
   updateDashboard();
 }
 
-function getAdjustedWinRate(strategy, direction, sentiment) {
-  let base = strategy.winRate;
+function getTradeApproval(symbol, direction) {
+  const sentiment = getMarketSentiment(symbol);
+  const strategyNames = Object.keys(state.strategies);
+  const bestStrategy = strategyNames
+    .map(name => ({ name, score: state.strategies[name].winRate }))
+    .sort((a, b) => b.score - a.score)[0];
 
-  if (sentiment.score > 0.3 && direction === "LONG") base += 0.08;
-  if (sentiment.score < -0.3 && direction === "SHORT") base += 0.08;
-  if (sentiment.score > 0.3 && direction === "SHORT") base -= 0.12;
-  if (sentiment.score < -0.3 && direction === "LONG") base -= 0.12;
+  const tradeDirectionMatch =
+    (direction === "LONG" && sentiment.score > 0.3) ||
+    (direction === "SHORT" && sentiment.score < -0.3);
 
-  return Math.min(0.8, Math.max(0.35, base));
+  const tradeDirectionOpposed =
+    (direction === "LONG" && sentiment.score < -0.3) ||
+    (direction === "SHORT" && sentiment.score > 0.3);
+
+  let status = "green";
+  let finalRisk = Number(document.getElementById("riskPercent").value);
+  let text = `Base strategy: ${bestStrategy.name} (${(bestStrategy.score * 100).toFixed(0)}% win edge). `;
+
+  if (state.pnl <= -((state.startingBalance * Number(document.getElementById("lossLimitPercent").value)) / 100)) {
+    status = "red";
+    text += `Portfolio already at danger zone. Trade blocked.`;
+    return { status, risk: 0, text };
+  }
+
+  if (tradeDirectionOpposed) {
+    status = "red";
+    finalRisk = 0.5;
+    text += `Sentiment conflicts with trade direction. Only tiny risk allowed.`;
+    return { status, risk: finalRisk, text };
+  }
+
+  if (!tradeDirectionMatch) {
+    status = "yellow";
+    finalRisk = Math.max(0.5, finalRisk * 0.5);
+    text += `Sentiment is mixed or neutral. Risk reduced to ${finalRisk}%.`;
+    return { status, risk: finalRisk, text };
+  }
+
+  if (bestStrategy.score > 0.6) {
+    text += `Sentiment aligns and the strongest strategy is active. Full-risk execution recommended.`;
+    return { status, risk: finalRisk, text };
+  }
+
+  status = "yellow";
+  finalRisk = Math.max(0.5, finalRisk * 0.75);
+  text += `Sentiment is supportive but strategy edge is moderate. Reduced risk recommended.`;
+  return { status, risk: finalRisk, text };
+}
+
+function updateApproval() {
+  const symbol = document.getElementById("symbol").value;
+  const direction = document.getElementById("direction").value;
+  const approval = getTradeApproval(symbol, direction);
+
+  const panel = document.getElementById("approvalPanel");
+  panel.className = "approval " + approval.status;
+  panel.innerHTML = `<div class="status">Approval: ${approval.status === "green" ? "Approved" : approval.status === "yellow" ? "Reduced Risk" : "Blocked"}</div><br>${approval.text}`;
 }
 
 function paperTrade() {
+  const symbol = document.getElementById("symbol").value;
+  const direction = document.getElementById("direction").value;
+
   if (state.killed) {
     addLog("✗ Trade rejected. Kill switch is ON.");
     return;
   }
 
-  const symbol = document.getElementById("symbol").value;
-  const direction = document.getElementById("direction").value;
-  const riskPercent = Number(document.getElementById("riskPercent").value);
-  const lossLimitPercent = Number(document.getElementById("lossLimitPercent").value);
+  const approval = getTradeApproval(symbol, direction);
+  const panel = document.getElementById("approvalPanel");
+  panel.className = "approval " + approval.status;
+  panel.innerHTML = `<div class="status">Approval: ${approval.status === "green" ? "Approved" : approval.status === "yellow" ? "Reduced Risk" : "Blocked"}</div><br>${approval.text}`;
+
+  if (approval.status === "red") {
+    addLog("✗ Trade skipped by approval engine. Risk or sentiment is unacceptable.");
+    return;
+  }
+
+  const riskPercent = approval.risk;
 
   if (!Number.isFinite(riskPercent) || riskPercent <= 0 || riskPercent > 5) {
     addLog("✗ Risk must be between 0.5% and 5% per trade.");
     return;
   }
 
-  if (!Number.isFinite(lossLimitPercent) || lossLimitPercent <= 0) {
-    addLog("✗ Daily loss limit must be positive.");
-    return;
-  }
-
   const riskAmount = (state.balance * riskPercent) / 100;
-  const maxDailyLoss = (state.startingBalance * lossLimitPercent) / 100;
+  const maxDailyLoss = (state.startingBalance * Number(document.getElementById("lossLimitPercent").value)) / 100;
+
   if (state.pnl <= -maxDailyLoss) {
     state.killed = true;
     saveState();
-    addLog("✗ Daily loss limit (" + money(-maxDailyLoss) + ") reached. Kill switch engaged.");
+    addLog("✗ Daily loss limit reached. Kill switch engaged.");
     updateDashboard();
     return;
   }
@@ -548,9 +630,13 @@ function paperTrade() {
   const selectedStrategy = strategyNames[Math.floor(Math.random() * strategyNames.length)];
   const strategy = state.strategies[selectedStrategy];
   const sentiment = getMarketSentiment(symbol);
-  const adjustedWinRate = getAdjustedWinRate(strategy, direction, sentiment);
+  const adjustedWinRate =
+    (strategy.winRate + (sentiment.score > 0.3 && direction === "LONG" ? 0.08 : 0) + (sentiment.score < -0.3 && direction === "SHORT" ? 0.08 : 0))
+    - (sentiment.score > 0.3 && direction === "SHORT" ? 0.12 : 0)
+    - (sentiment.score < -0.3 && direction === "LONG" ? 0.12 : 0);
 
-  const isWin = Math.random() < adjustedWinRate;
+  const finalWinRate = Math.min(0.8, Math.max(0.35, adjustedWinRate));
+  const isWin = Math.random() < finalWinRate;
 
   let result;
   if (isWin) {
@@ -575,7 +661,7 @@ function paperTrade() {
 
   const sign = result >= 0 ? "+" : "";
   const emoji = isWin ? "✓" : "✗";
-  addLog(`${emoji} ${selectedStrategy} | ${symbol} ${direction} | ${sign}${money(result)} | Sentiment ${sentiment.label} (${sentiment.score.toFixed(2)})`);
+  addLog(`${emoji} ${selectedStrategy} | ${symbol} ${direction} | ${sign}${money(result)} | Risk ${riskPercent}% | Sentiment ${sentiment.label} (${sentiment.score.toFixed(2)})`);
 
   saveState();
   updateDashboard();
@@ -589,7 +675,12 @@ function toggleKill() {
   updateDashboard();
 }
 
-document.getElementById("symbol").addEventListener("change", renderNewsFeed);
+document.getElementById("symbol").addEventListener("change", () => {
+  renderNewsFeed();
+  updateApproval();
+});
+
+document.getElementById("direction").addEventListener("change", updateApproval);
 updateDashboard();
 </script>
 </body>
