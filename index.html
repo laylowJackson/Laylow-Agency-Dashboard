@@ -240,6 +240,33 @@
     .approval.yellow .status { color: var(--warning); }
     .approval.red .status { color: var(--danger); }
 
+    .confidence {
+      background: #0d1224;
+      border: 1px solid #294778;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 12px;
+      font-size: 13px;
+      color: #dce6ff;
+    }
+
+    .confidence strong {
+      display: block;
+      margin-bottom: 6px;
+    }
+
+    .journal {
+      margin-top: 12px;
+      background: #0b1221;
+      border: 1px solid #243b6c;
+      border-radius: 10px;
+      padding: 10px;
+      max-height: 180px;
+      overflow-y: auto;
+      font-size: 12px;
+      color: #d8def2;
+    }
+
     @media (min-width: 700px) {
       .stats { grid-template-columns: repeat(4, 1fr); }
       .news-grid { grid-template-columns: 1.15fr 1fr; }
@@ -327,6 +354,16 @@
       Trade approval will be shown here before execution.
     </div>
 
+    <div class="confidence" id="confidencePanel">
+      <strong>Trade Confidence</strong>
+      Confidence score will be calculated before entry.
+    </div>
+
+    <div class="journal" id="journal">
+      <strong>Trade Journal</strong><br><br>
+      Waiting for the first setup...
+    </div>
+
     <div class="info-box" id="tradeInfo">
       Ready to trade. Risk is reduced when sentiment or strategy alignment is weak.
     </div>
@@ -337,7 +374,7 @@
 </div>
 
 <script>
-const STORAGE_KEY = "laylow-agency-intelligence-v1";
+const STORAGE_KEY = "laylow-agency-intelligence-v2";
 
 const strategies = {
   "QQQ Momentum": {
@@ -374,6 +411,7 @@ const defaultState = {
   wins: 0,
   losses: 0,
   killed: false,
+  skipped: 0,
   strategies: JSON.parse(JSON.stringify(strategies))
 };
 
@@ -514,12 +552,26 @@ function updateDashboard() {
 
   renderNewsFeed();
   renderWorkers();
+  renderJournal();
 }
 
 function addLog(text) {
   const log = document.getElementById("log");
   const time = new Date().toLocaleTimeString();
   log.innerHTML = time + " - " + text + "<br>" + log.innerHTML;
+}
+
+function renderJournal() {
+  const journal = document.getElementById("journal");
+  if (!state.journal || !state.journal.length) {
+    journal.innerHTML = "<strong>Trade Journal</strong><br><br>Waiting for the first setup...";
+    return;
+  }
+
+  journal.innerHTML = "<strong>Trade Journal</strong><br><br>" +
+    state.journal.slice(0, 6).map(entry =>
+      `• ${entry}`
+    ).join("<br>");
 }
 
 function resetAccount() {
@@ -587,6 +639,18 @@ function updateApproval() {
   const panel = document.getElementById("approvalPanel");
   panel.className = "approval " + approval.status;
   panel.innerHTML = `<div class="status">Approval: ${approval.status === "green" ? "Approved" : approval.status === "yellow" ? "Reduced Risk" : "Blocked"}</div><br>${approval.text}`;
+
+  const confidencePanel = document.getElementById("confidencePanel");
+  const confidence = Math.round((approval.status === "green" ? 85 : approval.status === "yellow" ? 60 : 15) + (getMarketSentiment(symbol).score + 1) * 10);
+  confidencePanel.innerHTML = `<strong>Trade Confidence</strong> ${Math.min(100, Math.max(0, confidence))}% confidence. ${approval.status === "green" ? "Setup is aligned and favorable." : approval.status === "yellow" ? "Setup is acceptable but risk should be reduced." : "Setup is weak or conflicting — avoid entry."}`;
+}
+
+function addJournalEntry(text) {
+  if (!state.journal) state.journal = [];
+  state.journal.unshift(text);
+  if (state.journal.length > 8) state.journal = state.journal.slice(0, 8);
+  saveState();
+  renderJournal();
 }
 
 function paperTrade() {
@@ -604,7 +668,11 @@ function paperTrade() {
   panel.innerHTML = `<div class="status">Approval: ${approval.status === "green" ? "Approved" : approval.status === "yellow" ? "Reduced Risk" : "Blocked"}</div><br>${approval.text}`;
 
   if (approval.status === "red") {
+    state.skipped = (state.skipped || 0) + 1;
+    addJournalEntry(`SKIPPED | ${symbol} ${direction} | Reason: ${approval.text}`);
     addLog("✗ Trade skipped by approval engine. Risk or sentiment is unacceptable.");
+    saveState();
+    updateDashboard();
     return;
   }
 
@@ -661,6 +729,8 @@ function paperTrade() {
 
   const sign = result >= 0 ? "+" : "";
   const emoji = isWin ? "✓" : "✗";
+  const journalText = `${emoji} ${selectedStrategy} | ${symbol} ${direction} | ${sign}${money(result)} | Risk ${riskPercent}% | Approval ${approval.status}`;
+  addJournalEntry(journalText);
   addLog(`${emoji} ${selectedStrategy} | ${symbol} ${direction} | ${sign}${money(result)} | Risk ${riskPercent}% | Sentiment ${sentiment.label} (${sentiment.score.toFixed(2)})`);
 
   saveState();
